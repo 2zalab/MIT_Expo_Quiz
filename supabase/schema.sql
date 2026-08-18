@@ -101,3 +101,33 @@ as $$
   order by random()
   limit question_limit;
 $$;
+
+-- === Maintenance: remove duplicate questions already stored in the table ===
+-- The app now dedupes questions client-side, but if the same wording was
+-- imported multiple times per category, the *available* pool of unique
+-- questions is still small, so the same ones keep reappearing across games.
+-- Run this diagnostic first to see how many duplicates exist per category:
+--
+-- select category, count(*) as total_rows, count(distinct lower(trim(question))) as unique_questions
+-- from public.questions
+-- group by category
+-- order by category;
+--
+-- Then run this to permanently delete the duplicate rows (keeps the lowest id
+-- for each identical question wording within a category):
+--
+-- with ranked as (
+--   select id, row_number() over (
+--     partition by category, lower(trim(question))
+--     order by id
+--   ) as rn
+--   from public.questions
+-- )
+-- delete from public.questions q
+-- using ranked r
+-- where q.id = r.id and r.rn > 1;
+--
+-- Optional: prevent future duplicate imports for the same category/wording
+-- create unique index if not exists questions_unique_text_idx
+-- on public.questions (category, lower(trim(question)));
+
