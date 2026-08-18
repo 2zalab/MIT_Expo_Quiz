@@ -91,6 +91,7 @@ export default function Play({
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null)
   const [answerLocked, setAnswerLocked] = useState(false)
   const [optionOrder, setOptionOrder] = useState<number[]>([0, 1, 2, 3])
+  const [availableCount, setAvailableCount] = useState<number | null>(null)
 
   /*
    * Mélange l'ordre d'affichage des 4 options (les données ont souvent la bonne réponse en position A)
@@ -106,43 +107,65 @@ export default function Play({
   }, [currentIndex, questions])
 
   /*
-   * Récupération des questions aléatoires selon la catégorie et le nombre choisis
+   * Nombre réel de questions disponibles pour la catégorie choisie,
+   * pour ne jamais proposer plus de questions que la base n'en contient
    */
-  async function loadQuestions() {
-    setLoadingQuestions(true)
+  useEffect(() => {
+    if (!nameSubmitted || started) {
+      return
+    }
 
-    // Puise dans un pool plus large que demandé pour pouvoir écarter les doublons
-    const poolSize = Math.min(questionCount * 4, 300)
+    let cancelled = false
 
-    let { data, error } = await supabase.rpc(
-      'get_random_questions',
-      {
-        question_limit: poolSize,
-        category_filter: category || null,
-      }
-    )
-
-    /*
-     * Repli si la fonction Supabase n'a pas encore été mise à jour
-     * avec le paramètre category_filter (ancienne signature) : on
-     * interroge directement la table pour garantir le nombre demandé
-     */
-    if (error && /Could not find the function/i.test(error.message)) {
-      console.warn(
-        'Fonction get_random_questions sans category_filter, repli sur une requête directe.'
-      )
-
-      let query = supabase.from('questions').select('*')
+    async function loadAvailableCount() {
+      let query = supabase
+        .from('questions')
+        .select('id', { count: 'exact', head: true })
 
       if (category) {
         query = query.eq('category', category)
       }
 
-      const fallback = await query
+      const { count, error } = await query
 
-      data = fallback.data
-      error = fallback.error
+      if (cancelled) {
+        return
+      }
+
+      if (error) {
+        console.error('Erreur comptage questions:', error)
+        setAvailableCount(null)
+        return
+      }
+
+      setAvailableCount(count ?? 0)
+
+      if (count && questionCount > count) {
+        setQuestionCount(count)
+      }
     }
+
+    loadAvailableCount()
+
+    return () => {
+      cancelled = true
+    }
+  }, [category, nameSubmitted, started])
+
+  /*
+   * Récupération des questions selon la catégorie et le nombre choisis,
+   * sans jamais renvoyer deux fois la même question
+   */
+  async function loadQuestions() {
+    setLoadingQuestions(true)
+
+    let query = supabase.from('questions').select('*').limit(5000)
+
+    if (category) {
+      query = query.eq('category', category)
+    }
+
+    const { data, error } = await query
 
     setLoadingQuestions(false)
 
@@ -440,10 +463,13 @@ export default function Play({
 
           <p className="muted" style={{ marginBottom: 8 }}>
             Nombre de questions
+            {availableCount !== null && ` (max ${availableCount})`}
           </p>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
-            {QUESTION_COUNT_OPTIONS.map((count) => (
+            {QUESTION_COUNT_OPTIONS.filter(
+              (count) => availableCount === null || count <= availableCount
+            ).map((count) => (
               <button
                 key={count}
                 className={`option ${questionCount === count ? 'selected' : ''}`}
@@ -462,12 +488,13 @@ export default function Play({
           <input
             type="number"
             min={1}
-            max={50}
+            max={availableCount ?? 500}
             value={questionCount}
             onChange={(e) => {
               const value = parseInt(e.target.value, 10)
+              const max = availableCount ?? 500
               setQuestionCount(
-                Number.isNaN(value) ? 1 : Math.min(50, Math.max(1, value))
+                Number.isNaN(value) ? 1 : Math.min(max, Math.max(1, value))
               )
             }}
             style={{ marginBottom: 20 }}
